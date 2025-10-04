@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Утилита для создания виртуальной машины в OpenStack.
-
-Скрипт создаёт корневой том из заданного образа, поднимает сервер с этим
-томом, дожидается активного состояния и печатает основные параметры созданной
-ВМ. Конфигурация (образ, сеть, ключ и security group) хранится в константах
-ниже — подставь свои значения при необходимости.
-"""
+"""Утилита для создания виртуальной машины в OpenStack."""
 
 from __future__ import annotations
 
@@ -16,24 +10,19 @@ from contextlib import suppress
 from openstack import exceptions as os_exc
 
 from openstack_utils import (
+    IMAGE_ID,
+    KEY_NAME,
+    NETWORK_NAME,
+    SECURITY_GROUP_ID,
+    SERVER_NAME_PREFIX,
     build_host_fqdn,
     connect,
+    create_server_from_volume,
+    create_volume,
+    delete_volume,
     ensure_positive_size,
-    wait_for_server,
-    wait_for_volume,
+    resolve_base_resources,
 )
-
-# ===== Константы под твою среду =====
-# UUID образа, из которого будет собираться корневой том. Сейчас это Ubuntu 24.04.
-IMAGE_ID = "47f3d709-a13b-41e0-b930-634e726bcfe8"
-# Название сети, в которую будет подключаться создаваемый порт.
-NETWORK_NAME = "public"
-# Имя уже загруженного в OpenStack SSH-ключа.
-KEY_NAME = "ssh_shevchuk"
-# UUID security group, который необходимо применить.
-SECURITY_GROUP_ID = "f32b1e84-b8e3-44c9-845a-bd242c7707b5"
-# Префикс имени сервера, если пользователь явно не задал имя.
-SERVER_NAME_PREFIX = "shevchuk"
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,55 +71,38 @@ def main() -> None:
     conn = connect()
 
     try:
-        # Подтягиваем все зависимые ресурсы.
-        net = conn.network.find_network(NETWORK_NAME, ignore_missing=False)
-        flv = conn.compute.find_flavor(args.flavor, ignore_missing=False)
-        sg = conn.network.get_security_group(SECURITY_GROUP_ID)
-        if not sg:
-            die(f"Security group {SECURITY_GROUP_ID} не найден")
-
-        # Создаём корневой том с нужным типом и образом.
-        volume = conn.block_storage.create_volume(
-            name=f"{name}-root",
-            size=args.size_gb,
-            image_id=IMAGE_ID,
-            volume_type=args.volume_type,
+        resources = resolve_base_resources(
+            conn,
+            network_name=NETWORK_NAME,
+            flavor_name=args.flavor,
+            security_group_id=SECURITY_GROUP_ID,
         )
-        volume = wait_for_volume(conn, volume)
 
-        # Если при создании сервера что-то пойдёт не так — удаляем том вручную.
+        volume = create_volume(
+            conn,
+            name=f"{name}-root",
+            size_gb=args.size_gb,
+            volume_type=args.volume_type,
+            image_id=IMAGE_ID,
+        )
+
         server = None
         try:
-            server_kwargs = dict(
+            server = create_server_from_volume(
+                conn,
                 name=name,
-                flavor_id=flv.id,
-                block_device_mapping_v2=[
-                    {
-                        "boot_index": 0,
-                        "uuid": volume.id,
-                        "source_type": "volume",
-                        "destination_type": "volume",
-                        "delete_on_termination": True,
-                    }
-                ],
-                networks=[{"uuid": net.id}],
-                security_groups=[{"name": sg.name}],
+                flavor_id=resources.flavor_id,
+                volume_id=volume.id,
+                network_id=resources.network_id,
+                security_group_name=resources.security_group_name,
                 key_name=KEY_NAME,
+                host_fqdn=host_fqdn,
             )
-            if host_fqdn:
-                server_kwargs["availability_zone"] = f"nova:{host_fqdn}"
-
-            # Создаём ВМ и ждём активного состояния.
-            server = conn.compute.create_server(**server_kwargs)
-            server = wait_for_server(conn, server)
         except Exception:
-            # Если Nova не смогла создать сервер, удаляем том, чтобы не осталось
-            # висящих ресурсов.
             with suppress(Exception):
-                conn.block_storage.delete_volume(volume, ignore_missing=True)
+                delete_volume(conn, volume.id)
             raise
 
-        # Дополнительно запрашиваем сервер, чтобы получить hypervisor_hostname.
         server = conn.compute.get_server(server.id)
         hyper = getattr(server, "hypervisor_hostname", None)
 
