@@ -10,25 +10,22 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from contextlib import suppress
 
-import openstack
 from openstack import exceptions as os_exc
 
-# ===== Константы под твою среду =====
-# UUID образа, из которого будет собираться корневой том. Сейчас это Ubuntu 24.04.
-IMAGE_ID = "47f3d709-a13b-41e0-b930-634e726bcfe8"
-# Название сети, в которую будет подключаться создаваемый порт.
-NETWORK_NAME = "public"
-# Имя уже загруженного в OpenStack SSH-ключа.
-KEY_NAME = "ssh_shevchuk"
-# UUID security group, который необходимо применить.
-SECURITY_GROUP_ID = "f32b1e84-b8e3-44c9-845a-bd242c7707b5"
-# Префикс имени сервера, если пользователь явно не задал имя.
-SERVER_NAME_PREFIX = "shevchuk"
+from openstack_utils import (
+    IMAGE_ID,
+    KEY_NAME,
+    NETWORK_NAME,
+    SECURITY_GROUP_ID,
+    SERVER_NAME_PREFIX,
+    connect,
+)
 
+# ===== Константы под твою среду =====
+# Значения констант импортируются из openstack_utils.py
 
 def parse_args() -> argparse.Namespace:
     """Разбор аргументов командной строки."""
@@ -76,20 +73,6 @@ def build_host_fqdn(host: str | None) -> str | None:
     if not host:
         return None
     return host if "." in host else f"{host}.001.gpucloud.ru"
-
-
-def connect() -> openstack.connection.Connection:
-    """Возвращает соединение с OpenStack.
-
-    Все креды берутся из переменных окружения OS_*, которые появляются после
-    выполнения `source openrc_*.sh`. При желании можно указать cloud через
-    переменную OS_CLOUD.
-    """
-
-    return openstack.connect(
-        cloud=os.getenv("OS_CLOUD", "envvars"),
-        compute_api_version="2.74",
-    )
 
 
 def die(msg: str, code: int = 1) -> None:
