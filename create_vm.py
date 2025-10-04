@@ -10,12 +10,18 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from contextlib import suppress
 
-import openstack
 from openstack import exceptions as os_exc
+
+from openstack_utils import (
+    build_host_fqdn,
+    connect,
+    ensure_positive_size,
+    wait_for_server,
+    wait_for_volume,
+)
 
 # ===== Константы под твою среду =====
 # UUID образа, из которого будет собираться корневой том. Сейчас это Ubuntu 24.04.
@@ -59,39 +65,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def ensure_positive_size(size_gb: int) -> None:
-    """Небольшая валидация размера тома."""
-
-    if size_gb <= 0:
-        raise ValueError("Размер тома должен быть больше нуля")
-
-
-def build_host_fqdn(host: str | None) -> str | None:
-    """Дополняет короткое имя hypervisor до FQDN.
-
-    OpenStack ожидает полное имя compute-ноды при явном указании AZ, поэтому
-    автоматом подставляем домен, если пользователь указал только o2nX.
-    """
-
-    if not host:
-        return None
-    return host if "." in host else f"{host}.001.gpucloud.ru"
-
-
-def connect() -> openstack.connection.Connection:
-    """Возвращает соединение с OpenStack.
-
-    Все креды берутся из переменных окружения OS_*, которые появляются после
-    выполнения `source openrc_*.sh`. При желании можно указать cloud через
-    переменную OS_CLOUD.
-    """
-
-    return openstack.connect(
-        cloud=os.getenv("OS_CLOUD", "envvars"),
-        compute_api_version="2.74",
-    )
-
-
 def die(msg: str, code: int = 1) -> None:
     """Печатает сообщение об ошибке и завершает процесс."""
 
@@ -123,11 +96,7 @@ def main() -> None:
             image_id=IMAGE_ID,
             volume_type=args.volume_type,
         )
-        volume = conn.block_storage.wait_for_status(
-            volume,
-            status="available",
-            failures=["error"],
-        )
+        volume = wait_for_volume(conn, volume)
 
         # Если при создании сервера что-то пойдёт не так — удаляем том вручную.
         server = None
@@ -153,11 +122,7 @@ def main() -> None:
 
             # Создаём ВМ и ждём активного состояния.
             server = conn.compute.create_server(**server_kwargs)
-            server = conn.compute.wait_for_server(
-                server,
-                status="ACTIVE",
-                failures=["ERROR"],
-            )
+            server = wait_for_server(conn, server)
         except Exception:
             # Если Nova не смогла создать сервер, удаляем том, чтобы не осталось
             # висящих ресурсов.
